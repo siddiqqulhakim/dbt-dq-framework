@@ -12,15 +12,17 @@
 
 {#- The relation under test, in the form the test receives it. -#}
 {% macro dq_rule_model_sql(rule) -%}
-{%- if rule.is_source -%}
-    {%- set relation = source(rule.source_name, rule.table_name) -%}
-{%- else -%}
-    {%- set relation = ref(rule.model_name) -%}
-{%- endif -%}
-{%- if rule.where_clause -%}
-    {{ '(select * from ' ~ relation ~ ' where ' ~ rule.where_clause ~ ') dbt_subquery' }}
-{%- else -%}
-    {{ relation }}
+{%- if execute -%}
+    {%- set relation = dq_framework.dq_resolve_relation(
+        model_name=none if rule.is_source else rule.model_name,
+        source_name=rule.source_name if rule.is_source else none,
+        table_name=rule.table_name if rule.is_source else none
+    ) -%}
+    {%- if rule.where_clause -%}
+        {{ '(select * from ' ~ relation ~ ' where ' ~ rule.where_clause ~ ') dbt_subquery' }}
+    {%- else -%}
+        {{ relation }}
+    {%- endif -%}
 {%- endif -%}
 {%- endmacro %}
 
@@ -34,4 +36,48 @@
 {%- set sql = test_macro(model=dq_framework.dq_rule_model_sql(rule), **rule.kwargs) -%}
 {%- do context.update({'dq_collecting': false}) -%}
 {{ return(sql) }}
+{%- endmacro %}
+
+{#- Resolves a model/seed/snapshot or source either via graph (when collecting) or ref/source (when testing). -#}
+{% macro dq_resolve_relation(model_name=none, source_name=none, table_name=none) -%}
+{%- if execute and context.get('dq_collecting', false) -%}
+    {%- if source_name is not none -%}
+        {%- set _node = graph.sources.values()
+            | selectattr('source_name', 'equalto', source_name)
+            | selectattr('name', 'equalto', table_name)
+            | first -%}
+        {%- if not _node -%}
+            {{ exceptions.raise_compiler_error('Source not found in graph: ' ~ source_name ~ '.' ~ table_name) }}
+        {%- endif -%}
+        {{ return(adapter.Relation.create(
+            database=_node.database,
+            schema=_node.schema,
+            identifier=_node.identifier
+        )) }}
+    {%- else -%}
+        {%- set _node = graph.nodes.values()
+            | selectattr('resource_type', 'in', ['model', 'seed', 'snapshot'])
+            | selectattr('name', 'equalto', model_name)
+            | first -%}
+        {%- if not _node -%}
+            {{ exceptions.raise_compiler_error('Model/seed not found in graph: ' ~ model_name) }}
+        {%- endif -%}
+        {{ return(adapter.Relation.create(
+            database=_node.database,
+            schema=_node.schema,
+            identifier=_node.alias
+        )) }}
+    {%- endif -%}
+{%- else -%}
+    {{ return(dq_framework.dq_static_ref_or_source(model_name, source_name, table_name)) }}
+{%- endif -%}
+{%- endmacro %}
+
+{#- Isolated wrapper so ref()/source() never appear in the AST during dq_collecting -#}
+{% macro dq_static_ref_or_source(model_name=none, source_name=none, table_name=none) -%}
+    {%- if source_name is not none -%}
+        {{ return(source(source_name, table_name)) }}
+    {%- else -%}
+        {{ return(ref(model_name)) }}
+    {%- endif -%}
 {%- endmacro %}

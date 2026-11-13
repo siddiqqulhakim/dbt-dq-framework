@@ -18,7 +18,11 @@
 {%- if key_columns | length == 0 %}
 {{ exceptions.raise_compiler_error('should_match_model needs key_columns') }}
 {%- endif %}
-{%- set other_relation = source(other_source, other_table) if other_source is not none else ref(other_model) -%}
+{%- set other_relation = dq_framework.dq_resolve_relation(
+    model_name=other_model,
+    source_name=other_source,
+    table_name=other_table
+) -%}
 {%- set other_keys = key_columns if other_key_columns is none else other_key_columns -%}
 {%- set other_compares = compare_columns if other_compare_columns is none else other_compare_columns -%}
 {%- set keys_sql = key_columns | join(', ') -%}
